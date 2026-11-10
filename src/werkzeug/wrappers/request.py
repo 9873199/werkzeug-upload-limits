@@ -111,6 +111,31 @@ class Request(_SansIORequest):
     .. versionadded:: 2.2.3
     """
 
+    max_file_size: int | None = None
+    """Stop parsing ``multipart/form-data`` if any single uploaded file is
+    larger than this number of bytes, and raise
+    :exc:`.RequestEntityTooLarge`. Only the actual file body data is counted
+    as it is received, not the ``Content-Length`` sent by the client. Text
+    fields do not count toward this limit, and multiple files with the same
+    field name are each checked. ``None`` disables the check, ``0`` only
+    allows empty files. This is an additional check, it does not replace
+    :attr:`max_content_length`.
+
+    .. versionadded:: 3.2
+    """
+
+    max_total_file_size: int | None = None
+    """Stop parsing ``multipart/form-data`` if the combined size of all
+    uploaded files is larger than this number of bytes, and raise
+    :exc:`.RequestEntityTooLarge`. Only the actual file body data is counted
+    as it is received, not the ``Content-Length`` sent by the client. Text
+    fields do not count toward this limit. ``None`` disables the check, ``0``
+    only allows empty files. This is an additional check, it does not replace
+    :attr:`max_content_length`.
+
+    .. versionadded:: 3.2
+    """
+
     form_data_parser_class: None = None
     """The class to use to parse form data.
 
@@ -321,6 +346,8 @@ class Request(_SansIORequest):
             "max_form_memory_size": self.max_form_memory_size,
             "max_content_length": self.max_content_length,
             "max_form_parts": self.max_form_parts,
+            "max_file_size": self.max_file_size,
+            "max_total_file_size": self.max_total_file_size,
         }
 
         if type(self)._get_file_stream is not Request._get_file_stream:

@@ -54,6 +54,15 @@ def _make_stream_factory(max_size: int | None) -> TStreamFactory:
 _default_stream_factory = _make_stream_factory(1024 * 500)
 
 
+def _check_size_limit(value: int | None, name: str) -> None:
+    """Validate that a size limit is ``None`` or not negative.
+
+    :raises ValueError: If ``value`` is a negative integer.
+    """
+    if value is not None and value < 0:
+        raise ValueError(f"'{name}' must be greater than or equal to 0.")
+
+
 def _parse_form_data(
     environ: wt.WSGIEnvironment,
     stream_factory: TStreamFactory | None = None,
@@ -62,6 +71,8 @@ def _parse_form_data(
     silent: bool = True,
     *,
     max_form_parts: int | None = None,
+    max_file_size: int | None = None,
+    max_total_file_size: int | None = None,
     **kwargs: t.Any,
 ) -> t_parse_result:
     """Parse the form data from the request body and return it as a
@@ -91,10 +102,22 @@ def _parse_form_data(
         parts are received, raise :exc:`.RequestEntityTooLarge`. This is an
         additional check, it does not replace using a limited stream and
         ``max_content_length``.
+    :param max_file_size: If any single uploaded file is larger than this many
+        bytes, raise :exc:`.RequestEntityTooLarge`. Only actual file body data
+        is counted, text fields do not count toward it. ``0`` only allows empty
+        files, ``None`` disables the check.
+    :param max_total_file_size: If the combined size of all uploaded files in
+        the request is larger than this many bytes, raise
+        :exc:`.RequestEntityTooLarge`. Only actual file body data is counted,
+        text fields do not count toward it. ``0`` only allows empty files,
+        ``None`` disables the check.
     :param cls: an optional dict class to use.  If this is not specified
                        or `None` the default :class:`MultiDict` is used.
     :param silent: If set to False parsing errors will not be caught.
     :return: A tuple in the form ``(stream, form, files)``.
+
+    .. versionadded:: 3.2
+        Added the ``max_file_size`` and ``max_total_file_size`` parameters.
 
     .. deprecated:: 3.2
         Will be removed in Werkzeug 4.0. Use ``Request.form`` and ``files``
@@ -126,6 +149,8 @@ def _parse_form_data(
         max_form_memory_size=max_form_memory_size,
         max_content_length=max_content_length,
         max_form_parts=max_form_parts,
+        max_file_size=max_file_size,
+        max_total_file_size=max_total_file_size,
         silent=silent,
     )
 
@@ -163,6 +188,15 @@ class _FormDataParser:
         parts are received, raise :exc:`.RequestEntityTooLarge`. This is an
         additional check, it does not replace using a limited stream and
         ``max_content_length``.
+    :param max_file_size: If any single uploaded file is larger than this many
+        bytes, raise :exc:`.RequestEntityTooLarge`. Only actual file body data
+        is counted, text fields do not count toward it. ``0`` only allows empty
+        files, ``None`` disables the check.
+    :param max_total_file_size: If the combined size of all uploaded files in
+        the request is larger than this many bytes, raise
+        :exc:`.RequestEntityTooLarge`. Only actual file body data is counted,
+        text fields do not count toward it. ``0`` only allows empty files,
+        ``None`` disables the check.
     :param cls: an optional dict class to use.  If this is not specified
                        or `None` the default :class:`MultiDict` is used.
     :param silent: If set to False parsing errors will not be caught.
@@ -170,6 +204,9 @@ class _FormDataParser:
     .. deprecated:: 3.2
         Will be removed in Werkzeug 4.0. Use ``Request.form`` and ``files``
         instead.
+
+    .. versionchanged:: 3.2
+        Added the ``max_file_size`` and ``max_total_file_size`` parameters.
 
     .. versionchanged:: 3.2
         The ``cls`` parameter and attribute are deprecated and will be removed
@@ -199,12 +236,18 @@ class _FormDataParser:
         silent: bool = True,
         *,
         max_form_parts: int | None = None,
+        max_file_size: int | None = None,
+        max_total_file_size: int | None = None,
         **kwargs: t.Any,
     ) -> None:
+        _check_size_limit(max_file_size, "max_file_size")
+        _check_size_limit(max_total_file_size, "max_total_file_size")
         self.stream_factory = stream_factory
         self.max_content_length = max_content_length
         self.max_form_memory_size = max_form_memory_size
         self.max_form_parts = max_form_parts
+        self.max_file_size = max_file_size
+        self.max_total_file_size = max_total_file_size
 
         if "cls" in kwargs:
             import warnings
@@ -299,6 +342,8 @@ class _FormDataParser:
             stream_factory=self.stream_factory,
             max_form_memory_size=self.max_form_memory_size,
             max_form_parts=self.max_form_parts,
+            max_file_size=self.max_file_size,
+            max_total_file_size=self.max_total_file_size,
         )
 
         if self.cls is not None:
@@ -341,10 +386,17 @@ class MultiPartParser:
         max_form_memory_size: int | None = None,
         buffer_size: int = 64 * 1024,
         max_form_parts: int | None = None,
+        *,
+        max_file_size: int | None = None,
+        max_total_file_size: int | None = None,
         **kwargs: t.Any,
     ) -> None:
+        _check_size_limit(max_file_size, "max_file_size")
+        _check_size_limit(max_total_file_size, "max_total_file_size")
         self.max_form_memory_size = max_form_memory_size
         self.max_form_parts = max_form_parts
+        self.max_file_size = max_file_size
+        self.max_total_file_size = max_total_file_size
 
         if stream_factory is None:
             stream_factory = _make_stream_factory(max_form_memory_size)
@@ -417,6 +469,11 @@ class MultiPartParser:
     ) -> tuple[MultiDict[str, str], MultiDict[str, FileStorage]]:
         current_part: Field | File
         field_size: int | None = None
+        # Size of the file currently being parsed, and of all files parsed so
+        # far. Only actual file body data is counted, based on the decoded
+        # events rather than any length sent by the client.
+        file_size = 0
+        total_file_size = 0
         container: t.IO[bytes] | list[bytes]
         _write: t.Callable[[bytes], t.Any]
 
@@ -441,18 +498,42 @@ class MultiPartParser:
                 elif isinstance(event, File):
                     current_part = event
                     field_size = None
+                    file_size = 0
                     container = self.start_file_streaming(event, content_length)
                     _write = container.write
                 elif isinstance(event, Data):
-                    if self.max_form_memory_size is not None and field_size is not None:
-                        # Ensure that accumulated data events do not exceed limit.
-                        # Also checked within single event in MultipartDecoder.
-                        field_size += len(event.data)
+                    data_size = len(event.data)
 
-                        if field_size > self.max_form_memory_size:
+                    if field_size is not None:
+                        if self.max_form_memory_size is not None:
+                            # Ensure that accumulated data events do not exceed limit.
+                            # Also checked within single event in MultipartDecoder.
+                            field_size += data_size
+
+                            if field_size > self.max_form_memory_size:
+                                raise RequestEntityTooLarge()
+                    elif data_size:
+                        # Check before writing so the oversized chunk is never
+                        # written to the file. Reaching the limit exactly is
+                        # allowed, one more byte is not.
+                        if (
+                            self.max_file_size is not None
+                            and file_size + data_size > self.max_file_size
+                        ):
+                            raise RequestEntityTooLarge()
+
+                        if (
+                            self.max_total_file_size is not None
+                            and total_file_size + data_size > self.max_total_file_size
+                        ):
                             raise RequestEntityTooLarge()
 
                     _write(event.data)
+
+                    if field_size is None:
+                        file_size += data_size
+                        total_file_size += data_size
+
                     if not event.more_data:
                         if isinstance(current_part, Field):
                             value = b"".join(container).decode(

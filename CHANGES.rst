@@ -11,6 +11,14 @@ Version 3.2.0
 
 -   Minimum required version of MarkupSafe is 3.0.3.
 -   Minimum supported version of Watchdog is 7.0.
+-   Add ``Request.max_file_size`` and ``Request.max_total_file_size`` to limit
+    the size of a single uploaded file and of all files in a
+    ``multipart/form-data`` request. Only actual file body data is counted,
+    not the client-provided ``Content-Length``. ``None`` disables a limit,
+    ``0`` only allows empty files, and a negative value raises ``ValueError``.
+    Exceeding either limit raises ``RequestEntityTooLarge`` before the
+    oversized data is written, and all file streams created for the request
+    are closed on failure.
 -   The CSP ``prefetch_src``, ``navigate_to``, and ``plugin_types`` properties
     are deprecated. Their corresponding directives have been deprecated or
     removed from the spec. :pr:`3114`
