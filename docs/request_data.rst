@@ -49,6 +49,17 @@ exceeded.
     more than this number of parts are received. This is useful to stop a very
     large number of very small fields, especially files. The default is 1000.
     This is an additional check, it does not replace ``max_content_length``.
+-   :attr:`~Request.max_file_size` - Stop parsing ``multipart/form-data`` if
+    any single file part is larger than this number of bytes. The bytes
+    actually received are counted, the client-provided ``Content-Length`` is
+    not trusted. Non-file parts are not counted. The default is no limit. This
+    is an additional check, it does not replace ``max_content_length``.
+-   :attr:`~Request.max_total_file_size` - Stop parsing
+    ``multipart/form-data`` if all file parts in the request together are
+    larger than this number of bytes. The bytes actually received are counted,
+    the client-provided ``Content-Length`` is not trusted. Non-file parts are
+    not counted. The default is no limit. This is an additional check, it does
+    not replace ``max_content_length`` or ``max_file_size``.
 
 Each of these values can be set on the ``Request`` class to affect the default
 for all requests, or on a ``request`` instance to change the behavior for a

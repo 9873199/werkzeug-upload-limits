@@ -62,6 +62,8 @@ def _parse_form_data(
     silent: bool = True,
     *,
     max_form_parts: int | None = None,
+    max_file_size: int | None = None,
+    max_total_file_size: int | None = None,
     **kwargs: t.Any,
 ) -> t_parse_result:
     """Parse the form data from the request body and return it as a
@@ -91,6 +93,14 @@ def _parse_form_data(
         parts are received, raise :exc:`.RequestEntityTooLarge`. This is an
         additional check, it does not replace using a limited stream and
         ``max_content_length``.
+    :param max_file_size: If a ``multipart/form-data`` file part is larger than
+        this many bytes, raise :exc:`.RequestEntityTooLarge`. This is an
+        additional check, it does not replace using a limited stream and
+        ``max_content_length``.
+    :param max_total_file_size: If all ``multipart/form-data`` file parts
+        together are larger than this many bytes, raise
+        :exc:`.RequestEntityTooLarge`. This is an additional check, it does not
+        replace using a limited stream and ``max_content_length``.
     :param cls: an optional dict class to use.  If this is not specified
                        or `None` the default :class:`MultiDict` is used.
     :param silent: If set to False parsing errors will not be caught.
@@ -103,6 +113,9 @@ def _parse_form_data(
     .. versionchanged:: 3.2
         The ``cls`` parameter is deprecated and will be removed in Werkzeug 4.0. It will
         always be ``ImmutableMultiDict``.
+
+    .. versionadded:: 3.2
+        Added the ``max_file_size`` and ``max_total_file_size`` parameters.
 
     .. versionchanged:: 3.1.9
         ``max_form_memory_size`` is not applied to
@@ -126,6 +139,8 @@ def _parse_form_data(
         max_form_memory_size=max_form_memory_size,
         max_content_length=max_content_length,
         max_form_parts=max_form_parts,
+        max_file_size=max_file_size,
+        max_total_file_size=max_total_file_size,
         silent=silent,
     )
 
@@ -163,6 +178,14 @@ class _FormDataParser:
         parts are received, raise :exc:`.RequestEntityTooLarge`. This is an
         additional check, it does not replace using a limited stream and
         ``max_content_length``.
+    :param max_file_size: If a ``multipart/form-data`` file part is larger than
+        this many bytes, raise :exc:`.RequestEntityTooLarge`. This is an
+        additional check, it does not replace using a limited stream and
+        ``max_content_length``.
+    :param max_total_file_size: If all ``multipart/form-data`` file parts
+        together are larger than this many bytes, raise
+        :exc:`.RequestEntityTooLarge`. This is an additional check, it does not
+        replace using a limited stream and ``max_content_length``.
     :param cls: an optional dict class to use.  If this is not specified
                        or `None` the default :class:`MultiDict` is used.
     :param silent: If set to False parsing errors will not be caught.
@@ -174,6 +197,9 @@ class _FormDataParser:
     .. versionchanged:: 3.2
         The ``cls`` parameter and attribute are deprecated and will be removed
         in Werkzeug 4.0. They will always be ``ImmutableMultiDict``.
+
+    .. versionadded:: 3.2
+        Added the ``max_file_size`` and ``max_total_file_size`` parameters.
 
     .. versionchanged:: 3.1.9
         ``max_form_memory_size`` is not applied to
@@ -199,12 +225,22 @@ class _FormDataParser:
         silent: bool = True,
         *,
         max_form_parts: int | None = None,
+        max_file_size: int | None = None,
+        max_total_file_size: int | None = None,
         **kwargs: t.Any,
     ) -> None:
         self.stream_factory = stream_factory
         self.max_content_length = max_content_length
         self.max_form_memory_size = max_form_memory_size
         self.max_form_parts = max_form_parts
+        self.max_file_size = max_file_size
+        self.max_total_file_size = max_total_file_size
+
+        if max_file_size is not None and max_file_size < 0:
+            raise ValueError("max_file_size cannot be negative")
+
+        if max_total_file_size is not None and max_total_file_size < 0:
+            raise ValueError("max_total_file_size cannot be negative")
 
         if "cls" in kwargs:
             import warnings
@@ -299,6 +335,8 @@ class _FormDataParser:
             stream_factory=self.stream_factory,
             max_form_memory_size=self.max_form_memory_size,
             max_form_parts=self.max_form_parts,
+            max_file_size=self.max_file_size,
+            max_total_file_size=self.max_total_file_size,
         )
 
         if self.cls is not None:
@@ -341,10 +379,20 @@ class MultiPartParser:
         max_form_memory_size: int | None = None,
         buffer_size: int = 64 * 1024,
         max_form_parts: int | None = None,
+        max_file_size: int | None = None,
+        max_total_file_size: int | None = None,
         **kwargs: t.Any,
     ) -> None:
         self.max_form_memory_size = max_form_memory_size
         self.max_form_parts = max_form_parts
+        self.max_file_size = max_file_size
+        self.max_total_file_size = max_total_file_size
+
+        if max_file_size is not None and max_file_size < 0:
+            raise ValueError("max_file_size cannot be negative")
+
+        if max_total_file_size is not None and max_total_file_size < 0:
+            raise ValueError("max_total_file_size cannot be negative")
 
         if stream_factory is None:
             stream_factory = _make_stream_factory(max_form_memory_size)
@@ -417,6 +465,8 @@ class MultiPartParser:
     ) -> tuple[MultiDict[str, str], MultiDict[str, FileStorage]]:
         current_part: Field | File
         field_size: int | None = None
+        file_size = 0
+        total_file_size = 0
         container: t.IO[bytes] | list[bytes]
         _write: t.Callable[[bytes], t.Any]
 
@@ -441,6 +491,7 @@ class MultiPartParser:
                 elif isinstance(event, File):
                     current_part = event
                     field_size = None
+                    file_size = 0
                     container = self.start_file_streaming(event, content_length)
                     _write = container.write
                 elif isinstance(event, Data):
@@ -451,6 +502,27 @@ class MultiPartParser:
 
                         if field_size > self.max_form_memory_size:
                             raise RequestEntityTooLarge()
+
+                    if field_size is None:
+                        # File part, count the actual bytes received towards
+                        # the per-file and per-request limits. The client
+                        # Content-Length is not trusted. Check before writing
+                        # so that data beyond the limit is never stored.
+                        if (
+                            self.max_file_size is not None
+                            and file_size + len(event.data) > self.max_file_size
+                        ):
+                            raise RequestEntityTooLarge()
+
+                        if (
+                            self.max_total_file_size is not None
+                            and total_file_size + len(event.data)
+                            > self.max_total_file_size
+                        ):
+                            raise RequestEntityTooLarge()
+
+                        file_size += len(event.data)
+                        total_file_size += len(event.data)
 
                     _write(event.data)
                     if not event.more_data:

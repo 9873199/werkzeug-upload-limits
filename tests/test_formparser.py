@@ -414,3 +414,307 @@ def test_multipart_max_form_memory_size() -> None:
 
     with pytest.raises(RequestEntityTooLarge):
         parser.parse(io.BytesIO(data), b"bound", None)
+
+
+def _file_part(name: bytes, filename: bytes, data: bytes, headers: bytes = b"") -> bytes:
+    return (
+        b"--bound\r\nContent-Disposition: form-data; name="
+        + name
+        + b"; filename="
+        + filename
+        + b"\r\n"
+        + headers
+        + b"\r\n"
+        + data
+    )
+
+
+def test_multipart_max_file_size() -> None:
+    """max_file_size is tracked across multiple data events of one file."""
+    data = _file_part(b"a", b"a.txt", b"a" * 15) + b"\r\n--bound--"
+    # The buffer size is less than the file size, so multiple data events
+    # will be returned. A file exactly at the limit is allowed.
+    parser = formparser.MultiPartParser(max_file_size=15, buffer_size=4)
+    _, files = parser.parse(io.BytesIO(data), b"bound", None)
+    assert files["a"].read() == b"a" * 15
+    files["a"].close()
+
+    # One byte over the limit fails.
+    parser = formparser.MultiPartParser(max_file_size=14, buffer_size=4)
+
+    with pytest.raises(RequestEntityTooLarge), parser:
+        parser.parse(io.BytesIO(data), b"bound", None)
+
+
+def test_multipart_max_file_size_split_boundary() -> None:
+    """The limit holds when chunks split the boundary at arbitrary places."""
+    data = _file_part(b"a", b"a.txt", b"a" * 15) + b"\r\n--bound--"
+    parser = formparser.MultiPartParser(max_file_size=10, buffer_size=1)
+
+    with pytest.raises(RequestEntityTooLarge), parser:
+        parser.parse(io.BytesIO(data), b"bound", None)
+
+
+def test_multipart_max_file_size_not_written() -> None:
+    """The chunk that exceeds max_file_size is not written to the stream."""
+
+    class TrackBytes(io.BytesIO):
+        written = 0
+
+        def write(self, b):
+            self.written += len(b)
+            return super().write(b)
+
+    containers: list[TrackBytes] = []
+
+    def factory(total_content_length, content_type, filename, content_length=None):
+        container = TrackBytes()
+        containers.append(container)
+        return container
+
+    data = _file_part(b"a", b"a.txt", b"a" * 15) + b"\r\n--bound--"
+    parser = formparser.MultiPartParser(
+        stream_factory=factory, max_file_size=10, buffer_size=4
+    )
+
+    with pytest.raises(RequestEntityTooLarge), parser:
+        parser.parse(io.BytesIO(data), b"bound", None)
+
+    assert len(containers) == 1
+    assert containers[0].written <= 10
+
+
+def test_multipart_max_total_file_size() -> None:
+    """max_total_file_size accumulates across files, including duplicate names."""
+    data = (
+        _file_part(b"a", b"a.txt", b"a" * 8)
+        + b"\r\n"
+        + _file_part(b"a", b"b.txt", b"b" * 8)
+        + b"\r\n--bound--"
+    )
+    # Each file is under the per-file limit, together they hit the total.
+    parser = formparser.MultiPartParser(max_file_size=10, max_total_file_size=16)
+    _, files = parser.parse(io.BytesIO(data), b"bound", None)
+    assert [f.read() for f in files.getlist("a")] == [b"a" * 8, b"b" * 8]
+
+    for f in files.getlist("a"):
+        f.close()
+
+    # One byte less in the total limit fails on the second file.
+    parser = formparser.MultiPartParser(max_file_size=10, max_total_file_size=15)
+
+    with pytest.raises(RequestEntityTooLarge), parser:
+        parser.parse(io.BytesIO(data), b"bound", None)
+
+
+def test_multipart_max_file_size_ignores_fields() -> None:
+    """Non-file fields don't count against the file size limits."""
+    data = (
+        b"--bound\r\nContent-Disposition: form-data; name=t\r\n\r\n"
+        + b"t" * 100
+        + b"\r\n"
+        + _file_part(b"a", b"a.txt", b"a" * 5)
+        + b"\r\n--bound--"
+    )
+    parser = formparser.MultiPartParser(
+        max_file_size=5, max_total_file_size=5, buffer_size=8
+    )
+    form, files = parser.parse(io.BytesIO(data), b"bound", None)
+    assert form["t"] == "t" * 100
+    assert files["a"].read() == b"a" * 5
+    files["a"].close()
+
+
+def test_multipart_max_file_size_zero() -> None:
+    """A limit of 0 only allows empty files."""
+    data = (
+        _file_part(b"empty", b"a.txt", b"")
+        + b"\r\n"
+        + _file_part(b"full", b"b.txt", b"x")
+        + b"\r\n--bound--"
+    )
+    parser = formparser.MultiPartParser(max_file_size=0, max_total_file_size=0)
+
+    with pytest.raises(RequestEntityTooLarge), parser:
+        parser.parse(io.BytesIO(data), b"bound", None)
+
+    data = _file_part(b"empty", b"a.txt", b"") + b"\r\n--bound--"
+    parser = formparser.MultiPartParser(max_file_size=0, max_total_file_size=0)
+    _, files = parser.parse(io.BytesIO(data), b"bound", None)
+    assert files["empty"].read() == b""
+    files["empty"].close()
+
+
+def test_multipart_negative_file_size() -> None:
+    """Negative limits are a configuration error."""
+    with pytest.raises(ValueError, match="max_file_size"):
+        formparser.MultiPartParser(max_file_size=-1)
+
+    with pytest.raises(ValueError, match="max_total_file_size"):
+        formparser.MultiPartParser(max_total_file_size=-1)
+
+
+def test_multipart_max_file_size_closes_files() -> None:
+    """All file streams, including completed ones, are closed on failure."""
+    containers: list[io.BytesIO] = []
+
+    def factory(total_content_length, content_type, filename, content_length=None):
+        container = io.BytesIO()
+        containers.append(container)
+        return container
+
+    data = (
+        _file_part(b"a", b"a.txt", b"a" * 5)
+        + b"\r\n"
+        + _file_part(b"b", b"b.txt", b"b" * 10)
+        + b"\r\n--bound--"
+    )
+    parser = formparser.MultiPartParser(stream_factory=factory, max_file_size=8)
+
+    with pytest.raises(RequestEntityTooLarge):
+        with parser:
+            parser.parse(io.BytesIO(data), b"bound", None)
+
+    # The first file was received completely, the second failed. Both must
+    # be closed.
+    assert len(containers) == 2
+    assert all(container.closed for container in containers)
+
+
+def test_multipart_max_file_size_truncated() -> None:
+    """An upload cut off mid-file fails instead of bypassing the limits."""
+    data = _file_part(b"a", b"a.txt", b"a" * 8)  # no closing boundary
+    parser = formparser.MultiPartParser(max_file_size=10, buffer_size=4)
+
+    with pytest.raises(ValueError, match="Invalid form-data"), parser:
+        parser.parse(io.BytesIO(data), b"bound", None)
+
+
+class TestRequestFileSizeLimits:
+    def test_max_file_size(self) -> None:
+        # The part claims Content-Length: 1, which must not be trusted.
+        data = (
+            b"--foo\r\nContent-Disposition: form-data; name=f; filename=a.txt\r\n"
+            b"Content-Length: 1\r\n\r\n" + b"x" * 20 + b"\r\n--foo--"
+        )
+        req = Request.from_values(
+            data=data,
+            content_type="multipart/form-data; boundary=foo",
+            method="POST",
+        )
+        req.max_file_size = 10
+
+        with pytest.raises(RequestEntityTooLarge):
+            req.files
+
+        with Request.from_values(
+            data=data,
+            content_type="multipart/form-data; boundary=foo",
+            method="POST",
+        ) as req:
+            req.max_file_size = 20
+            assert req.files["f"].read() == b"x" * 20
+
+    def test_max_total_file_size(self) -> None:
+        data = (
+            b"--foo\r\nContent-Disposition: form-data; name=f; filename=a.txt\r\n\r\n"
+            + b"a" * 8
+            + b"\r\n--foo\r\nContent-Disposition: form-data; name=f; filename=b.txt"
+            b"\r\n\r\n"
+            + b"b" * 8
+            + b"\r\n--foo--"
+        )
+        req = Request.from_values(
+            data=data,
+            content_type="multipart/form-data; boundary=foo",
+            method="POST",
+        )
+        req.max_total_file_size = 15
+
+        with pytest.raises(RequestEntityTooLarge):
+            req.files
+
+        with Request.from_values(
+            data=data,
+            content_type="multipart/form-data; boundary=foo",
+            method="POST",
+        ) as req:
+            req.max_total_file_size = 16
+            assert [f.read() for f in req.files.getlist("f")] == [b"a" * 8, b"b" * 8]
+
+    def test_failure_closes_files(self) -> None:
+        containers: list[io.BytesIO] = []
+
+        def factory(
+            total_content_length, content_type, filename, content_length=None
+        ):
+            container = io.BytesIO()
+            containers.append(container)
+            return container
+
+        class TrackRequest(Request):
+            def _parse_form_data(self, stream):
+                parser = formparser._FormDataParser(
+                    stream_factory=factory,
+                    max_form_memory_size=self.max_form_memory_size,
+                    max_content_length=self.max_content_length,
+                    max_form_parts=self.max_form_parts,
+                    max_file_size=self.max_file_size,
+                    max_total_file_size=self.max_total_file_size,
+                )
+                _, form, files = parser.parse(
+                    stream=stream,
+                    mimetype=self.mimetype,
+                    content_length=self.content_length,
+                    options=self.mimetype_params,
+                )
+                return form, files
+
+        data = (
+            b"--foo\r\nContent-Disposition: form-data; name=a; filename=a.txt\r\n\r\n"
+            + b"a" * 5
+            + b"\r\n--foo\r\nContent-Disposition: form-data; name=b; filename=b.txt"
+            b"\r\n\r\n"
+            + b"b" * 10
+            + b"\r\n--foo--"
+        )
+        req = TrackRequest.from_values(
+            data=data,
+            content_type="multipart/form-data; boundary=foo",
+            method="POST",
+        )
+        req.max_file_size = 8
+
+        with pytest.raises(RequestEntityTooLarge):
+            req.files
+
+        # The first file was received completely, the second failed. Both
+        # must be closed.
+        assert len(containers) == 2
+        assert all(container.closed for container in containers)
+
+    def test_negative_limit(self) -> None:
+        data = (
+            b"--foo\r\nContent-Disposition: form-data; name=f; filename=a.txt\r\n\r\n"
+            b"x\r\n--foo--"
+        )
+        req = Request.from_values(
+            data=data,
+            content_type="multipart/form-data; boundary=foo",
+            method="POST",
+        )
+        req.max_file_size = -1
+
+        with pytest.raises(ValueError, match="max_file_size"):
+            req.form
+
+        req = Request.from_values(
+            data=data,
+            content_type="multipart/form-data; boundary=foo",
+            method="POST",
+        )
+        req.max_total_file_size = -1
+
+        with pytest.raises(ValueError, match="max_total_file_size"):
+            req.form
+

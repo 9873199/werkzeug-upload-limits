@@ -273,8 +273,10 @@ class MultipartDecoder:
         # could be present in the data. This will be the earliest
         # position of a LF or a CR, unless that position is more
         # than a complete boundary from the end in which case there
-        # is no partial boundary.
-        complete_boundary_index = len(data) - len(b"\r\n--" + self.boundary)
+        # is no partial boundary. The epilogue marker "--" is included
+        # in the length, otherwise a chunk ending after the first dash
+        # of the epilogue boundary could release the leading CR as data.
+        complete_boundary_index = len(data) - len(b"\r\n--" + self.boundary + b"--")
         try:
             last_nl = data.rindex(b"\n")
         except ValueError:

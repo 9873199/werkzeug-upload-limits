@@ -4,6 +4,15 @@ Version 3.2.0
 -------------
 
 -   Drop support for Python 3.9 and 3.10. :pr:`3098`
+-   Add ``Request.max_file_size`` and ``Request.max_total_file_size`` to limit
+    the size of individual file parts and of all file parts combined when
+    parsing ``multipart/form-data``. The actual bytes received are counted
+    rather than trusting the client ``Content-Length``, and exceeding the
+    limit raises ``RequestEntityTooLarge`` before the extra data is written.
+    ``FormDataParser`` and ``MultiPartParser`` accept corresponding
+    ``max_file_size`` and ``max_total_file_size`` parameters.
+-   The multipart decoder does not emit a stray ``\r`` as part data when a
+    chunk ends after the first dash of the epilogue boundary marker.
 -   Remove previous deprecated code: :pr:`3099`
 
     -   ``OrderedMultiDict`` and ``ImmutableOrderedMultiDict`` are removed.
