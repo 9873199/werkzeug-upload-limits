@@ -1,0 +1,26 @@
+全部完成，1002 个测试全部通过。总结改动：
+
+## 实现内容
+
+**`src/werkzeug/wrappers/request.py`**
+- 新增 `Request.max_file_size`（单文件限额）和 `Request.max_total_file_size`（本次请求全部文件累计限额），默认 `None` 维持原行为，并在 `_private_make_form_data_parser` 中传入解析器。
+
+**`src/werkzeug/formparser.py`**
+- `_parse_form_data`、`_FormDataParser`、`MultiPartParser` 都接受 `max_file_size` / `max_total_file_size` 参数并逐层传递。
+- 两个解析器在 `__init__` 校验：负数直接抛 `ValueError`（配置错误）。校验放在 `_FormDataParser.__init__`，确保不会被 `parse()` 里 `silent` 模式的 `except ValueError` 吞掉。
+- `MultiPartParser.parse` 的 Data 事件里，对文件 part 按**实际收到的字节**逐块计数（不信 part 头里的 `Content-Length`），先检查再写流：`file_size + len(data) > max_file_size` 或累计超 `max_total_file_size` 就抛 413，**超额那块不会写入目标流**；恰好等于限额放行；`0` 只放行空文件。普通字段走原有 `max_form_memory_size` 逻辑，不占文件额度；同名多附件通过累计计数器自然覆盖。
+- 异常清理复用并验证了现有机制：`MultiPartParser.__exit__` 在异常时关闭 `self._files` 里**所有**已建文件流（含已收完的附件），`_FormDataParser._parse_multipart` 的 `with` 保证触发；成功路径不关流，`FileStorage` 正常读。
+
+**`src/werkzeug/sansio/multipart.py`（顺带修的解码器 bug）**
+- 测试发现：当 chunk 恰好切在结尾边界 `--boundary--` 的第一个 `-` 后，`_last_partial_boundary_index` 的安全窗口没算 epilogue 的 `--`，会把边界前缀的 `\r` 当成文件正文吐出（小 buffer 下文件内容被污染、计数也会错）。已把窗口长度加上 `b"--"`，任意 buffer 切分下文件内容都正确——这也保证了"boundary 切到任意位置不能绕过/干扰检查"。
+
+**文档**：`Request` 属性 docstring、`FormDataParser`/`MultiPartParser` 参数说明、`docs/request_data.rst` 限额列表、`CHANGES.rst` 两条记录。
+
+**测试**（`tests/test_formparser.py`，全部用本地字节流）：
+- 单文件：恰好到限额通过、多一字节 413、buffer_size=1 的任意 boundary 切分仍生效、超额块未写入流（跟踪写入字节数）
+- 累计：两个同名附件分别不超限但合计超 → 413；合计恰好等于限额通过且两个 `FileStorage` 都可读
+- 大字段不占文件额度；`0` 放行空文件、拒绝 1 字节文件；负数 → `ValueError`（解析器层和 Request 层）
+- 失败后所有已建文件流（含已收完的）都被关闭（解析器层 + Request 层各一例）
+- part 头谎报 `Content-Length: 1` 实际 20 字节仍被拦截；传到一半断掉 → 解析失败而非绕过
+
+既有 `max_content_length`、`max_form_memory_size`、`max_form_parts` 行为未受影响（全套 1002 测试通过）。

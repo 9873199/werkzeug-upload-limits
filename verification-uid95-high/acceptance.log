@@ -1,0 +1,23 @@
+...................................F.........FF                          [100%]
+================================== FAILURES ===================================
+________________ test_low_level_parser_failure_cleanup[False] _________________
+..\test_acceptance.py:137: in test_low_level_parser_failure_cleanup
+    assert f.streams and all(x.closed for x in f.streams)
+E   assert ([<test_acceptance.StreamSpy object at 0x000001A44200DF30>] and False)
+E    +  where [<test_acceptance.StreamSpy object at 0x000001A44200DF30>] = <test_acceptance.Factory object at 0x000001A44200E0D0>.streams
+E    +  and   False = all(<generator object test_low_level_parser_failure_cleanup.<locals>.<genexpr> at 0x000001A441EEA8E0>)
+____________ test_input_failure_cleans_completed_and_current_files ____________
+..\test_acceptance.py:183: in test_input_failure_cleans_completed_and_current_files
+    assert all(x.closed for x in f.streams)
+E   assert False
+E    +  where False = all(<generator object test_input_failure_cleans_completed_and_current_files.<locals>.<genexpr> at 0x000001A442038E10>)
+_______________ test_destination_write_failure_cleans_all_files _______________
+..\test_acceptance.py:196: in test_destination_write_failure_cleans_all_files
+    assert all(x.closed for x in f.streams)
+E   assert False
+E    +  where False = all(<generator object test_destination_write_failure_cleans_all_files.<locals>.<genexpr> at 0x000001A44203ACF0>)
+=========================== short test summary info ===========================
+FAILED ..\test_acceptance.py::test_low_level_parser_failure_cleanup[False] - ...
+FAILED ..\test_acceptance.py::test_input_failure_cleans_completed_and_current_files
+FAILED ..\test_acceptance.py::test_destination_write_failure_cleans_all_files
+3 failed, 44 passed in 4.23s

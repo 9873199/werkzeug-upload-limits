@@ -1,0 +1,12 @@
+........................................................................ [ 52%]
+................................................................F        [100%]
+================================== FAILURES ===================================
+____________ test_factory_failure_closes_previously_completed_file ____________
+..\test_stream_edges.py:75: in test_factory_failure_closes_previously_completed_file
+    assert len(streams) == 1 and streams[0].closed
+E   assert (1 == 1 and False)
+E    +  where 1 = len([<_io.BytesIO object at 0x000002B68C4A0310>])
+E    +  and   False = <_io.BytesIO object at 0x000002B68C4A0310>.closed
+=========================== short test summary info ===========================
+FAILED ..\test_stream_edges.py::test_factory_failure_closes_previously_completed_file
+1 failed, 136 passed in 5.09s

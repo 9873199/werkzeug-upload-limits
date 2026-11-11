@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "D:\\hc\\userFeedback\\cache\\envs\\uid95-high-20261111\\Scripts\\python.exe",
+    "-B",
+    "-m",
+    "pytest",
+    "tests/sansio/test_multipart.py",
+    "tests/test_formparser.py",
+    "tests/test_wrappers.py",
+    "-q",
+    "--tb=short",
+    "--basetemp",
+    "D:\\hc\\userFeedback\\cache\\t\\uid95-high-regression",
+    "-o",
+    "cache_dir=D:\\hc\\userFeedback\\cache\\tool-cache\\pytest-uid95-high",
+    "--junitxml=D:\\hc\\userFeedback\\cache\\uid95-high-20261111\\evaluation\\uf-20261110-01-upload-budget-high-20261111\\regression.xml"
+  ],
+  "cwd": "D:\\hc\\userFeedback\\cache\\uid95-high-20261111\\evaluation\\uf-20261110-01-upload-budget-high-20261111\\frozen-artifact",
+  "PYTHONPATH": "D:\\hc\\userFeedback\\cache\\uid95-high-20261111\\evaluation\\uf-20261110-01-upload-budget-high-20261111\\frozen-artifact\\src",
+  "python": "D:\\hc\\userFeedback\\cache\\envs\\uid95-high-20261111\\Scripts\\python.exe"
+}
